@@ -9,24 +9,33 @@ object InclusionDependencies extends App {
 
   case class CommandLineArgs(path: String = "./TPCH", cores: Int = 4)
 
-  val parser = new scopt.OptionParser[CommandLineArgs]("distributed-ind") {
-    opt[String]('p', "path")
-    opt[String]('c', "cores")
+  def parseConfig(): CommandLineArgs = {
+    val parser = new scopt.OptionParser[CommandLineArgs]("distributed-ind") {
+      opt[String]('p', "path")
+      opt[String]('c', "cores")
+    }
+    parser.parse(args, CommandLineArgs()).get
   }
 
-  val config = parser.parse(args, CommandLineArgs()).get
+  def initSparkSession(config: CommandLineArgs): SparkSession = {
+    Logger.getLogger("org").setLevel(Level.OFF)
+    Logger.getLogger("akka").setLevel(Level.OFF)
 
-  Logger.getLogger("org").setLevel(Level.OFF)
-  Logger.getLogger("akka").setLevel(Level.OFF)
+    val sparkBuilder = SparkSession
+      .builder()
+      .appName("InclusionDependencies")
+      .master(s"local[${config.cores}]")
+    val spark = sparkBuilder.getOrCreate()
+    spark.conf.set("spark.sql.shuffle.partitions", s"${config.cores * 2}")
+    spark
+  }
 
-  val sparkBuilder = SparkSession
-    .builder()
-    .appName("InclusionDependencies")
-    .master(s"local[${config.cores}]")
-  val spark = sparkBuilder.getOrCreate()
-  spark.conf.set("spark.sql.shuffle.partitions", s"${config.cores * 2}")
+  val config = parseConfig()
+  val spark = initSparkSession(config)
 
   import spark.implicits._
+
+  case class Cell(value: String, attributes: Set[String])
 
   def loadFile(path: String): DataFrame = {
     spark
@@ -36,56 +45,42 @@ object InclusionDependencies extends App {
       .csv(path)
   }
 
-  def toCells(dataFrame: DataFrame): Dataset[(String, Set[String])] = {
+  def toCells(dataFrame: DataFrame): Dataset[Cell] = {
     dataFrame.rdd.flatMap(row => {
       val values = row.toSeq.map(_.toString)
       val attrNameSets = row.schema.map(attr => Set(attr.name))
-      values.zip(attrNameSets)
+      values
+        .zip(attrNameSets)
+        .map { case (value, attributes) => Cell(value, attributes) }
     }).toDS
   }
 
-  def aggregateWith(func: (Set[String], Set[String]) => Set[String]): (String, Iterator[(String, Set[String])]) => (String, Set[String]) = {
-    (key, iterator) => (key, iterator.map(_._2).reduce(func))
+  def toDependencyString(cell: Cell): String = {
+    val sortedAttributes = cell.attributes.toList.sorted
+    s"${cell.value} < ${sortedAttributes.mkString(", ")}"
   }
 
-  def byValue(t: (String, Set[String])): String = {
-    t match {case (value, _) => value}
-  }
+  val paths = new File(config.path).listFiles.filter(_.isFile).map(_.getAbsolutePath)
 
-  def toInclusionLists(t: (String, Set[String])): Set[(String, Set[String])] = {
-    t match {
-      case (_, set) => set.map(elem => (elem, set - elem))
-    }
-  }
-
-  def nonEmptyAttributeSet(t: (String, Set[String])): Boolean = {
-    t match {case (_, set) => set.nonEmpty}
-  }
-
-  def toDependencyString(t: (String, Set[String])): String = {
-    t match {
-      case (dependent, referenced) =>
-        s"$dependent < ${referenced.toList.sorted.mkString(", ")}"
-    }
-  }
-
-  val time = System.currentTimeMillis
-  val tpchPath = "src/main/resources/"
-  val paths = new File(tpchPath).listFiles.filter(_.isFile).map(_.getAbsolutePath)
-  val dependencies =
-    paths
-      .map(loadFile)
-      .map(toCells)
-      .reduce(_.union(_))
-      .groupByKey(byValue)
-      .mapGroups(aggregateWith(_.union(_)))
-      .flatMap(toInclusionLists)
-      .groupByKey(byValue)
-      .mapGroups(aggregateWith(_.intersect(_)))
-      .filter(_._2.nonEmpty)
-      .collect()
-      .map(toDependencyString)
-      .sorted
+  val dependencies = paths
+    .map(loadFile)
+    .map(toCells)
+    .reduce(_.union(_))
+    .groupByKey(_.value)
+    .mapGroups((value, cells) =>
+      Cell(value, cells.map(_.attributes).reduce(_.union(_)))
+    )
+    .flatMap(cell =>
+      cell.attributes.map(elem => Cell(elem, cell.attributes - elem))
+    )
+    .groupByKey(_.value)
+    .mapGroups((value, cells) =>
+      Cell(value, cells.map(_.attributes).reduce(_.intersect(_)))
+    )
+    .filter(_.attributes.nonEmpty)
+    .collect()
+    .map(toDependencyString)
+    .sorted
 
   dependencies.foreach(println)
 }
