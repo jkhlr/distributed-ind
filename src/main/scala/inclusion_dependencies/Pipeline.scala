@@ -1,16 +1,8 @@
 package inclusion_dependencies
 
-import inclusion_dependencies.Pipeline.Cell
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
-object Pipeline extends Serializable {
-
-  case class Cell(value: String, attributes: Set[String])
-
-  def run(spark: SparkSession, paths: Seq[String]): Seq[String] = new Pipeline(spark).run(paths)
-}
-
-class Pipeline(val spark: SparkSession) extends Serializable {
+class Pipeline(val spark: SparkSession, val paths: Seq[String]) extends Serializable {
 
   import spark.implicits._
 
@@ -23,43 +15,40 @@ class Pipeline(val spark: SparkSession) extends Serializable {
   }
 
   def toCells(dataFrame: DataFrame): Dataset[Cell] = {
+    val attrNameSets = dataFrame.columns.map(Set(_))
     dataFrame.rdd.flatMap(row => {
-      val values = row.toSeq.map(_.toString)
-      val attrNameSets = row.schema.map(attr => Set(attr.name))
-      values
+      row
+        .toSeq
+        .map(_.toString)
         .zip(attrNameSets)
-        .map {
-          case (value, attributes) => Cell(value, attributes)
+        .map { case (value, attributes) =>
+          Cell(value, attributes)
         }
     }).toDS
   }
 
-  def toDependencyString(cell: Cell): String = {
-    val sortedAttributes = cell.attributes.toList.sorted
-    s"${cell.value} < ${sortedAttributes.mkString(", ")}"
-  }
-
-  def run(paths: Seq[String]): Seq[String] = {
+  def run: Seq[Cell] = {
     paths
       .map(loadFile)
       .map(toCells)
       .reduce(_.union(_))
       .groupByKey(_.value)
-      .mapGroups((value, cells) =>
-        Cell(value, cells.map(_.attributes).reduce(_.union(_)))
-      )
+      .mapGroups((value, cells) => {
+        val attributeUnion = cells.map(_.attributes).reduce(_.union(_))
+        Cell(value, attributeUnion)
+      })
       .flatMap(cell =>
         cell.attributes.map(attribute =>
           Cell(attribute, cell.attributes - attribute)
         )
       )
       .groupByKey(_.value)
-      .mapGroups((value, cells) =>
-        Cell(value, cells.map(_.attributes).reduce(_.intersect(_)))
-      )
+      .mapGroups((value, cells) => {
+        val attributeIntersection = cells.map(_.attributes).reduce(_.intersect(_))
+        Cell(value, attributeIntersection)
+      })
       .filter(_.attributes.nonEmpty)
-      .collect()
-      .map(toDependencyString)
-      .sorted
+      .collect
+      .sortWith(_.value < _.value)
   }
 }

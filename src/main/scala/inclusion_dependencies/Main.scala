@@ -26,13 +26,22 @@ object Main extends App {
       .appName("InclusionDependencies")
       .master(s"local[$cores]")
     val spark = sparkBuilder.getOrCreate()
+
     spark.conf.set("spark.sql.shuffle.partitions", s"${cores * 2}")
     spark
   }
 
+  def getFilePaths(dirPath: String): Seq[String] = {
+    new File(config.path)
+      .listFiles
+      .filter(_.isFile)
+      .map(_.getAbsolutePath)
+  }
+
   val config = parseConfig()
   val spark = initSparkSession(config.cores)
-  val paths = new File(config.path).listFiles.filter(_.isFile).map(_.getAbsolutePath)
+  val paths = getFilePaths(config.path)
 
-  Pipeline.run(spark, paths).foreach(println)
+  val cells = new Pipeline(spark, paths).run
+  println(cells.map(_.toDependencyString).mkString("\n"))
 }
