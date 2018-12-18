@@ -9,7 +9,7 @@ object Main extends App {
 
   case class CommandLineArgs(path: String = "./TPCH", cores: Int = 4)
 
-  def parseConfig(): CommandLineArgs = {
+  val config: CommandLineArgs = {
     val parser = new scopt.OptionParser[CommandLineArgs]("distributed-ind") {
       opt[String]('p', "path")
       opt[String]('c', "cores")
@@ -17,31 +17,31 @@ object Main extends App {
     parser.parse(args, CommandLineArgs()).get
   }
 
-  def initSparkSession(cores: Int): SparkSession = {
+  def initSparkSession: SparkSession = {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
 
     val sparkBuilder = SparkSession
       .builder()
       .appName("InclusionDependencies")
-      .master(s"local[$cores]")
+      .master(s"local[${config.cores}]")
     val spark = sparkBuilder.getOrCreate()
 
-    spark.conf.set("spark.sql.shuffle.partitions", s"${cores * 2}")
+    spark.conf.set("spark.sql.shuffle.partitions", s"${config.cores * 2}")
     spark
   }
 
-  def getFilePaths(dirPath: String): Seq[String] = {
+  def getFilePaths: Seq[String] = {
     new File(config.path)
       .listFiles
       .filter(_.isFile)
       .map(_.getAbsolutePath)
   }
 
-  val config = parseConfig()
-  val spark = initSparkSession(config.cores)
-  val paths = getFilePaths(config.path)
-
-  val cells = new Pipeline(spark, paths).run
-  println(cells.map(_.toDependencyString).mkString("\n"))
+  println(
+    new Pipeline(initSparkSession, getFilePaths)
+      .run
+      .map(_.toDependencyString)
+      .mkString("\n")
+  )
 }
