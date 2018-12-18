@@ -36,11 +36,7 @@ class Pipeline(val spark: SparkSession) extends Serializable {
 
   def toDependencyString(cell: Cell): String = {
     val sortedAttributes = cell.attributes.toList.sorted
-    s"${
-      cell.value
-    } < ${
-      sortedAttributes.mkString(", ")
-    }"
+    s"${cell.value} < ${sortedAttributes.mkString(", ")}"
   }
 
   def run(paths: Seq[String]): Seq[String] = {
@@ -53,7 +49,9 @@ class Pipeline(val spark: SparkSession) extends Serializable {
         Cell(value, cells.map(_.attributes).reduce(_.union(_)))
       )
       .flatMap(cell =>
-        cell.attributes.map(elem => Cell(elem, cell.attributes - elem))
+        cell.attributes.map(attribute =>
+          Cell(attribute, cell.attributes - attribute)
+        )
       )
       .groupByKey(_.value)
       .mapGroups((value, cells) =>
